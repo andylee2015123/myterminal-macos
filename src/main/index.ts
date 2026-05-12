@@ -1,12 +1,51 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { execFile } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { ConnectionStore } from './connection-store';
 import { PtyManager } from './pty-manager';
 import type { ConnectionDraft, CreateSessionRequest } from '../shared/types';
 
+configureDevSessionStorage();
+
 const store = new ConnectionStore();
 const ptyManager = new PtyManager(store);
+
+function configureDevSessionStorage(): void {
+  if (!process.env.ELECTRON_RENDERER_URL) {
+    return;
+  }
+
+  process.env.MYTERMINAL_CONNECTIONS_DIR ||= path.join(app.getPath('appData'), app.getName());
+
+  const cliProfilePath = getCommandLineSwitchValue('user-data-dir');
+  const profilePath = cliProfilePath || path.join(app.getPath('temp'), 'MyTerminal', `electron-dev-profile-${process.pid}`);
+  const sessionDataPath = path.join(profilePath, 'Session Data');
+  const cachePath = getCommandLineSwitchValue('disk-cache-dir') || path.join(profilePath, 'Cache');
+
+  mkdirSync(sessionDataPath, { recursive: true });
+  mkdirSync(cachePath, { recursive: true });
+
+  if (!cliProfilePath) {
+    app.setPath('userData', profilePath);
+    app.commandLine.appendSwitch('user-data-dir', profilePath);
+  }
+
+  app.setPath('sessionData', sessionDataPath);
+  if (!getCommandLineSwitchValue('disk-cache-dir')) {
+    app.commandLine.appendSwitch('disk-cache-dir', cachePath);
+  }
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+  app.commandLine.appendSwitch('disable-http-cache');
+  app.commandLine.appendSwitch('log-level', '3');
+}
+
+function getCommandLineSwitchValue(name: string): string | undefined {
+  const prefix = `--${name}=`;
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -61,12 +100,43 @@ function registerIpc(): void {
     return result.canceled ? undefined : result.filePaths[0];
   });
 
+  ipcMain.handle('folder:open-in-explorer', (_event, folderPath: string) => openFolderInExplorer(folderPath));
+
   ipcMain.handle('sessions:create', (_event, request: CreateSessionRequest) => ptyManager.create(request));
   ipcMain.handle('sessions:write', (_event, sessionId: string, data: string) => ptyManager.write(sessionId, data));
   ipcMain.handle('sessions:resize', (_event, sessionId: string, cols: number, rows: number) =>
     ptyManager.resize(sessionId, cols, rows)
   );
   ipcMain.handle('sessions:close', (_event, sessionId: string) => ptyManager.close(sessionId));
+}
+
+async function openFolderInExplorer(folderPath: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    throw new Error('Explorer is only available on Windows.');
+  }
+
+  const resolvedPath = path.resolve(folderPath);
+  let folder;
+  try {
+    folder = await stat(resolvedPath);
+  } catch {
+    throw new Error('Local folder does not exist.');
+  }
+
+  if (!folder.isDirectory()) {
+    throw new Error('Local folder does not exist.');
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    execFile('explorer.exe', [resolvedPath], { windowsHide: false }, (error) => {
+      if (error) {
+        reject(new Error('Failed to open folder in Explorer.'));
+        return;
+      }
+
+      resolve();
+    });
+  });
 }
 
 function isRunningAsAdmin(): Promise<boolean> {

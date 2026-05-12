@@ -190,6 +190,12 @@ export function App(): JSX.Element {
   }, [filteredConnections]);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
+  const activeConnection = useMemo(
+    () => connections.find((connection) => connection.id === activeSession?.connectionId),
+    [connections, activeSession?.connectionId]
+  );
+  const activeLocalPowerShellConnection =
+    activeConnection && isLocalPowerShellConnection(activeConnection) ? activeConnection : undefined;
 
   const startNewLocal = (): void => {
     setEditorMode('local-new');
@@ -341,6 +347,18 @@ export function App(): JSX.Element {
     }
 
     terminalActionsRef.current.get(activeSessionId)?.paste();
+  };
+
+  const openActiveFolderInExplorer = async (): Promise<void> => {
+    if (!activeLocalPowerShellConnection) {
+      return;
+    }
+
+    try {
+      await window.terminalApi.openFolderInExplorer(activeLocalPowerShellConnection.localPath);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to open folder in Explorer.');
+    }
   };
 
   return (
@@ -522,6 +540,15 @@ export function App(): JSX.Element {
               <div className="terminal-subtitle">{activeSession?.subtitle || 'Open a connection to start.'}</div>
             </div>
             <div className="terminal-tools">
+              {activeLocalPowerShellConnection && (
+                <button
+                  className="tool-button"
+                  onClick={openActiveFolderInExplorer}
+                  title="Open folder in Explorer"
+                >
+                  <FolderOpen size={15} />
+                </button>
+              )}
               <button
                 className="tool-button"
                 onClick={copyActiveTerminal}
@@ -1214,6 +1241,10 @@ function validateDraft(draft: DraftState): string | undefined {
 function formatSshEndpoint(connection: Pick<SshConnection, 'host' | 'port' | 'username'>): string {
   const target = connection.username ? `${connection.username}@${connection.host}` : connection.host;
   return `${target}:${connection.port}`;
+}
+
+function isLocalPowerShellConnection(connection: Connection): connection is LocalConnection {
+  return connection.type === 'local' && (connection.shell === 'powershell' || connection.shell === 'pwsh');
 }
 
 function clamp(value: number, min: number, max: number): number {

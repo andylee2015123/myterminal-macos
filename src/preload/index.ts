@@ -21,6 +21,8 @@ const terminalApi = {
   writeClipboardText: (text: string): void => clipboard.writeText(text),
   pickFolder: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-folder'),
   pickFile: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-file'),
+  openFolderInExplorer: (folderPath: string): Promise<void> =>
+    ipcRenderer.invoke('folder:open-in-explorer', folderPath),
   createSession: (request: CreateSessionRequest): Promise<SessionInfo> =>
     ipcRenderer.invoke('sessions:create', request),
   writeSession: (sessionId: string, data: string): Promise<void> =>

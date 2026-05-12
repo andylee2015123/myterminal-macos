@@ -23,7 +23,7 @@ export class ConnectionStore {
   private cache: StoredConnection[] | null = null;
 
   constructor() {
-    this.filePath = path.join(app.getPath('userData'), 'connections.json');
+    this.filePath = path.join(process.env.MYTERMINAL_CONNECTIONS_DIR || app.getPath('userData'), 'connections.json');
   }
 
   async list(): Promise<Connection[]> {

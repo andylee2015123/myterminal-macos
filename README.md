@@ -78,8 +78,6 @@ End users should not need `npm run dev`; they should use the packaged installer 
 
 ## License
 
-No open-source license has been selected for this project yet.
-
-Until a `LICENSE` file is added and a `license` field is set in `package.json`, treat this project as proprietary / all rights reserved. Do not redistribute or reuse the source code outside the project owner's permission.
+This project is licensed under the MIT License.
 
 Third-party dependencies such as Electron, React, xterm.js, and node-pty remain governed by their own licenses.

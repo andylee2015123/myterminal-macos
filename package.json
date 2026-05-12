@@ -2,6 +2,7 @@
   "name": "myterminal",
   "version": "0.1.0",
   "description": "A Windows desktop terminal with managed local and SSH connections.",
+  "license": "MIT",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {

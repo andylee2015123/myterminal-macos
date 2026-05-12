@@ -5,6 +5,7 @@ import {
   Braces,
   Check,
   ChevronsUpDown,
+  ClipboardPaste,
   Copy,
   Edit3,
   Folder,
@@ -28,6 +29,7 @@ import {
   Wifi
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import type {
   AppPrivilegeStatus,
   Connection,
@@ -70,11 +72,16 @@ const EMPTY_SSH_DRAFT: Omit<SshConnection, 'id' | 'createdAt' | 'updatedAt' | 'h
   keyPath: '',
   remotePath: '',
   sshConfigHost: '',
+  puttySessionName: '',
   extraArgs: ''
 };
 
 type EditorMode = 'local-new' | 'ssh-new' | 'edit';
 type DraftState = ConnectionDraft & { hasPassword?: boolean };
+type TerminalActions = {
+  copy: () => void;
+  paste: () => void;
+};
 
 export function App(): JSX.Element {
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -97,6 +104,7 @@ export function App(): JSX.Element {
   const [editorPanelVisible, setEditorPanelVisible] = useState(
     () => window.localStorage.getItem('editorPanelVisible') !== 'false'
   );
+  const terminalActionsRef = useRef(new Map<string, TerminalActions>());
 
   const loadConnections = useCallback(async () => {
     setConnections(await window.terminalApi.listConnections());
@@ -122,13 +130,11 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const offExit = window.terminalApi.onSessionExit((event: SessionExitEvent) => {
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === event.sessionId
-            ? { ...session, status: 'exited', exitCode: event.exitCode }
-            : session
-        )
-      );
+      setSessions((current) => {
+        const next = current.filter((session) => session.id !== event.sessionId);
+        setActiveSessionId((activeId) => (activeId === event.sessionId ? next[next.length - 1]?.id : activeId));
+        return next;
+      });
     });
 
     return offExit;
@@ -149,7 +155,7 @@ export function App(): JSX.Element {
           connection.group,
           connection.type === 'local'
             ? connection.localPath
-            : `${connection.username}@${connection.host}:${connection.port} ${connection.sshConfigHost || ''}`,
+            : `${formatSshEndpoint(connection)} ${connection.sshConfigHost || ''}`,
           connection.tags.join(' ')
         ]
           .join(' ')
@@ -252,10 +258,15 @@ export function App(): JSX.Element {
   };
 
   const openConnection = async (connectionId: string): Promise<void> => {
-    const session = await window.terminalApi.createSession({ connectionId, cols: 100, rows: 32 });
-    setSessions((current) => [...current, session]);
-    setActiveSessionId(session.id);
-    await loadConnections();
+    try {
+      const session = await window.terminalApi.createSession({ connectionId, cols: 100, rows: 32 });
+      setSessions((current) => [...current, session]);
+      setActiveSessionId(session.id);
+      await loadConnections();
+      setMessage(undefined);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection failed.');
+    }
   };
 
   const closeSession = async (sessionId: string): Promise<void> => {
@@ -273,6 +284,16 @@ export function App(): JSX.Element {
     const imported = await window.terminalApi.importSshConfig();
     await loadConnections();
     setMessage(imported.length ? `Imported ${imported.length} SSH connection(s).` : 'No new SSH config hosts found.');
+  };
+
+  const importPuttySsh = async (): Promise<void> => {
+    const imported = await window.terminalApi.importPuttySsh();
+    await loadConnections();
+    setMessage(
+      imported.length
+        ? `Imported or updated ${imported.length} PuTTY SSH connection(s).`
+        : 'No new PuTTY SSH sessions found.'
+    );
   };
 
   const requestAdminRelaunch = async (): Promise<void> => {
@@ -296,6 +317,30 @@ export function App(): JSX.Element {
       tags: [...connection.tags]
     } as ConnectionDraft);
     await loadConnections();
+  };
+
+  const registerTerminalActions = useCallback((sessionId: string, actions: TerminalActions): void => {
+    terminalActionsRef.current.set(sessionId, actions);
+  }, []);
+
+  const unregisterTerminalActions = useCallback((sessionId: string): void => {
+    terminalActionsRef.current.delete(sessionId);
+  }, []);
+
+  const copyActiveTerminal = (): void => {
+    if (!activeSessionId) {
+      return;
+    }
+
+    terminalActionsRef.current.get(activeSessionId)?.copy();
+  };
+
+  const pasteActiveTerminal = (): void => {
+    if (!activeSessionId) {
+      return;
+    }
+
+    terminalActionsRef.current.get(activeSessionId)?.paste();
   };
 
   return (
@@ -352,6 +397,9 @@ export function App(): JSX.Element {
           </button>
           <button className="ghost-action wide" onClick={importSshConfig}>
             <Import size={16} /> Import SSH config
+          </button>
+          <button className="ghost-action wide" onClick={importPuttySsh}>
+            <Import size={16} /> Import PuTTY
           </button>
         </div>
 
@@ -474,6 +522,22 @@ export function App(): JSX.Element {
               <div className="terminal-subtitle">{activeSession?.subtitle || 'Open a connection to start.'}</div>
             </div>
             <div className="terminal-tools">
+              <button
+                className="tool-button"
+                onClick={copyActiveTerminal}
+                disabled={!activeSessionId}
+                title="Copy selected text"
+              >
+                <Copy size={15} />
+              </button>
+              <button
+                className="tool-button"
+                onClick={pasteActiveTerminal}
+                disabled={!activeSessionId}
+                title="Paste"
+              >
+                <ClipboardPaste size={15} />
+              </button>
               {privilegeStatus.isWindows && (
                 <button
                   className={`admin-button ${privilegeStatus.isAdmin ? 'active' : ''}`}
@@ -506,6 +570,8 @@ export function App(): JSX.Element {
                 key={session.id}
                 session={session}
                 active={session.id === activeSessionId}
+                onActionsReady={registerTerminalActions}
+                onActionsDispose={unregisterTerminalActions}
               />
             ))}
           </div>
@@ -536,14 +602,21 @@ function ConnectionRow({
   const detail =
     connection.type === 'local'
       ? connection.localPath
-      : `${connection.username}@${connection.host}:${connection.port}`;
+      : formatSshEndpoint(connection);
 
   return (
     <div className={`connection-row ${selected ? 'selected' : ''}`}>
       <button className="favorite-button" onClick={onToggleFavorite} title="Favorite">
         {connection.favorite ? <Star size={15} fill="currentColor" /> : <StarOff size={15} />}
       </button>
-      <button className="connection-main" onClick={onOpen}>
+      <button
+        className="connection-main"
+        onClick={onEdit}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          onOpen();
+        }}
+      >
         <span className="connection-color" style={{ backgroundColor: connection.color }} />
         <span className="connection-copy">
           <strong>{connection.name || 'Untitled'}</strong>
@@ -551,6 +624,9 @@ function ConnectionRow({
         </span>
       </button>
       <div className="connection-actions">
+        <button title="Connect" onClick={onOpen}>
+          <TerminalSquare size={15} />
+        </button>
         <button title="Edit" onClick={onEdit}>
           <Edit3 size={15} />
         </button>
@@ -776,6 +852,15 @@ function SshFields({
           onChange={(event) => onDraftChange('sshConfigHost', event.target.value)}
         />
       </label>
+      {draft.puttySessionName && (
+        <label>
+          <span>PuTTY session</span>
+          <input
+            value={draft.puttySessionName}
+            onChange={(event) => onDraftChange('puttySessionName', event.target.value)}
+          />
+        </label>
+      )}
 
       <div className="auth-row">
         {(['agent', 'key', 'password'] as SshAuthType[]).map((authType) => (
@@ -805,6 +890,10 @@ function SshFields({
             </button>
           </div>
         </label>
+      )}
+
+      {draft.puttySessionName && draft.keyPath?.toLowerCase().endsWith('.ppk') && (
+        <div className="hint-line">Connect uses PuTTY/plink for this .ppk session.</div>
       )}
 
       {draft.authType === 'password' && (
@@ -851,15 +940,21 @@ function SshFields({
 
 function TerminalPane({
   session,
-  active
+  active,
+  onActionsReady,
+  onActionsDispose
 }: {
   session: SessionInfo;
   active: boolean;
+  onActionsReady: (sessionId: string, actions: TerminalActions) => void;
+  onActionsDispose: (sessionId: string) => void;
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const activeRef = useRef(active);
+  const actionsRef = useRef<TerminalActions | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ left: number; top: number } | undefined>();
 
   useEffect(() => {
     activeRef.current = active;
@@ -901,6 +996,71 @@ function TerminalPane({
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(containerRef.current as HTMLDivElement);
     terminal.focus();
+
+    const copySelection = (): void => {
+      const selection = terminal.getSelection();
+      if (selection) {
+        window.terminalApi.writeClipboardText(selection);
+      }
+    };
+
+    const pasteClipboard = (): void => {
+      const text = window.terminalApi.readClipboardText();
+      if (text) {
+        window.terminalApi.writeSession(session.id, text);
+      }
+    };
+
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') {
+        return true;
+      }
+
+      if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
+        copySelection();
+        return false;
+      }
+
+      if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
+        pasteClipboard();
+        return false;
+      }
+
+      if (event.ctrlKey && !event.shiftKey && event.code === 'KeyC') {
+        if (terminal.getSelection()) {
+          copySelection();
+          return false;
+        }
+
+        return true;
+      }
+
+      if (event.ctrlKey && !event.shiftKey && event.code === 'KeyV') {
+        pasteClipboard();
+        return false;
+      }
+
+      if (event.ctrlKey && event.code === 'Insert') {
+        copySelection();
+        return false;
+      }
+
+      if (event.shiftKey && event.code === 'Insert') {
+        pasteClipboard();
+        return false;
+      }
+
+      return true;
+    });
+
+    const actions = {
+      copy: copySelection,
+      paste: pasteClipboard
+    };
+
+    actionsRef.current = actions;
+    onActionsReady(session.id, actions);
+
     terminal.onData((data) => {
       window.terminalApi.writeSession(session.id, data);
     });
@@ -939,11 +1099,13 @@ function TerminalPane({
     }, 60);
 
     return () => {
+      actionsRef.current = null;
+      onActionsDispose(session.id);
       offData();
       resizeObserver.disconnect();
       terminal.dispose();
     };
-  }, [session.id]);
+  }, [onActionsDispose, onActionsReady, session.id]);
 
   useEffect(() => {
     if (!active || !terminalRef.current || !fitRef.current) {
@@ -959,7 +1121,62 @@ function TerminalPane({
     }, 40);
   }, [active, session.id]);
 
-  return <div className={`terminal-pane ${active ? 'active' : ''}`} ref={containerRef} />;
+  useEffect(() => {
+    if (!active) {
+      setContextMenu(undefined);
+    }
+  }, [active]);
+
+  const showContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    terminalRef.current?.focus();
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      left: clamp(event.clientX - rect.left, 8, rect.width - 150),
+      top: clamp(event.clientY - rect.top, 8, rect.height - 84)
+    });
+  };
+
+  const hideContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!(event.target as HTMLElement).closest('.terminal-context-menu')) {
+      setContextMenu(undefined);
+    }
+  };
+
+  return (
+    <div
+      className={`terminal-pane ${active ? 'active' : ''}`}
+      onContextMenu={showContextMenu}
+      onMouseDown={hideContextMenu}
+    >
+      <div className="terminal-mount" ref={containerRef} />
+      {contextMenu && (
+        <div
+          className="terminal-context-menu"
+          style={{ left: contextMenu.left, top: contextMenu.top }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              actionsRef.current?.copy();
+              setContextMenu(undefined);
+            }}
+          >
+            <Copy size={14} /> Copy
+          </button>
+          <button
+            onClick={() => {
+              actionsRef.current?.paste();
+              setContextMenu(undefined);
+            }}
+          >
+            <ClipboardPaste size={14} /> Paste
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function validateDraft(draft: DraftState): string | undefined {
@@ -982,10 +1199,6 @@ function validateDraft(draft: DraftState): string | undefined {
       return 'Host is required.';
     }
 
-    if (!draft.username.trim() && !draft.sshConfigHost?.trim()) {
-      return 'User is required.';
-    }
-
     if (draft.port < 1 || draft.port > 65535) {
       return 'Port must be between 1 and 65535.';
     }
@@ -996,4 +1209,13 @@ function validateDraft(draft: DraftState): string | undefined {
   }
 
   return undefined;
+}
+
+function formatSshEndpoint(connection: Pick<SshConnection, 'host' | 'port' | 'username'>): string {
+  const target = connection.username ? `${connection.username}@${connection.host}` : connection.host;
+  return `${target}:${connection.port}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
 }

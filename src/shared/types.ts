@@ -31,6 +31,7 @@ export interface SshConnection extends BaseConnection {
   keyPath?: string;
   remotePath?: string;
   sshConfigHost?: string;
+  puttySessionName?: string;
   extraArgs?: string;
   hasPassword?: boolean;
 }

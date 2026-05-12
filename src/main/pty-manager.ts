@@ -1,15 +1,28 @@
 import { BrowserWindow } from 'electron';
+import { execFile } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
 import type { Connection, CreateSessionRequest, SessionInfo } from '../shared/types';
 import { ConnectionStore } from './connection-store';
+
+interface SpawnCommand {
+  file: string;
+  args: string[];
+  cwd?: string;
+  password?: string;
+}
 
 interface RunningSession {
   process: pty.IPty;
   info: SessionInfo;
   pendingPassword?: string;
   sentPassword: boolean;
+  recentOutput: string;
+  sentAccessGrantedReturn: boolean;
+  sentHostKeyConfirmation: boolean;
 }
 
 export class PtyManager {
@@ -47,11 +60,16 @@ export class PtyManager {
       process: child,
       info,
       pendingPassword: command.password,
-      sentPassword: false
+      sentPassword: false,
+      recentOutput: '',
+      sentAccessGrantedReturn: false,
+      sentHostKeyConfirmation: false
     };
 
     child.onData((data) => {
       this.maybeSendPassword(session, data);
+      this.maybeConfirmAccessGranted(session, data);
+      this.maybeConfirmUnknownHostKey(session);
       this.broadcast('session:data', { sessionId: id, data });
     });
 
@@ -97,12 +115,7 @@ export class PtyManager {
     }
   }
 
-  private async commandForConnection(connection: Connection): Promise<{
-    file: string;
-    args: string[];
-    cwd?: string;
-    password?: string;
-  }> {
+  private async commandForConnection(connection: Connection): Promise<SpawnCommand> {
     if (connection.type === 'local') {
       if (connection.shell === 'pwsh') {
         return { file: 'pwsh.exe', args: ['-NoLogo'], cwd: connection.localPath };
@@ -119,7 +132,13 @@ export class PtyManager {
       return { file: 'powershell.exe', args: ['-NoLogo'], cwd: connection.localPath };
     }
 
+    const puttyCommand = await commandForPuttyConnection(connection);
+    if (puttyCommand) {
+      return puttyCommand;
+    }
+
     const args: string[] = [];
+    args.push('-o', 'StrictHostKeyChecking=accept-new');
 
     if (connection.port && connection.port !== 22) {
       args.push('-p', String(connection.port));
@@ -133,7 +152,7 @@ export class PtyManager {
       args.push(extraArg);
     }
 
-    const target = connection.sshConfigHost || `${connection.username}@${connection.host}`;
+    const target = connection.sshConfigHost || sshTarget(connection);
 
     if (connection.remotePath) {
       args.push('-t', target, `cd ${quotePosix(connection.remotePath)} && exec ${remoteLoginShell()}`);
@@ -163,6 +182,29 @@ export class PtyManager {
     }
   }
 
+  private maybeConfirmAccessGranted(session: RunningSession, data: string): void {
+    session.recentOutput = `${session.recentOutput}${stripAnsi(data)}`.slice(-600);
+    if (session.sentAccessGrantedReturn) {
+      return;
+    }
+
+    if (/Access granted\.\s*Press Return to begin session\./i.test(session.recentOutput)) {
+      session.process.write('\r');
+      session.sentAccessGrantedReturn = true;
+    }
+  }
+
+  private maybeConfirmUnknownHostKey(session: RunningSession): void {
+    if (session.sentHostKeyConfirmation) {
+      return;
+    }
+
+    if (/Are you sure you want to continue connecting \(yes\/no\/\[fingerprint\]\)\?\s*$/i.test(session.recentOutput)) {
+      session.process.write('yes\r');
+      session.sentHostKeyConfirmation = true;
+    }
+  }
+
   private broadcast(channel: string, payload: unknown): void {
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send(channel, payload);
@@ -175,7 +217,72 @@ function subtitleForConnection(connection: Connection): string {
     return connection.localPath;
   }
 
-  return `${connection.username}@${connection.host}:${connection.port}`;
+  return sshEndpoint(connection);
+}
+
+async function commandForPuttyConnection(
+  connection: Extract<Connection, { type: 'ssh' }>
+): Promise<SpawnCommand | undefined> {
+  const puttySessionName = connection.puttySessionName || inferPuttySessionName(connection);
+  const usesPpkKey = isPpkKey(connection.keyPath);
+  if (!puttySessionName && !usesPpkKey) {
+    return undefined;
+  }
+
+  const plinkPath = await findPlink();
+  if (plinkPath) {
+    const args = puttySessionName
+      ? ['-load', puttySessionName]
+      : puttyDirectArgs(connection);
+    if (connection.remotePath) {
+      args.push('-t');
+    }
+
+    if (!puttySessionName) {
+      args.push(sshTarget(connection));
+    }
+
+    if (connection.remotePath) {
+      args.push(`cd ${quotePosix(connection.remotePath)} && exec ${remoteLoginShell()}`);
+    }
+
+    return { file: plinkPath, args };
+  }
+
+  const subject = puttySessionName ? `PuTTY session "${puttySessionName}"` : `PPK key "${connection.keyPath}"`;
+  return terminalMessageCommand([
+    `${subject} needs PuTTY/plink for this connection.`,
+    'Install plink.exe from PuTTY or convert the key to OpenSSH format before connecting with ssh.exe.'
+  ]);
+}
+
+function inferPuttySessionName(connection: Extract<Connection, { type: 'ssh' }>): string | undefined {
+  if (connection.group === 'PuTTY' || connection.tags.includes('putty')) {
+    return connection.name;
+  }
+
+  return undefined;
+}
+
+function puttyDirectArgs(connection: Extract<Connection, { type: 'ssh' }>): string[] {
+  const args = ['-ssh'];
+  if (connection.port && connection.port !== 22) {
+    args.push('-P', String(connection.port));
+  }
+
+  if (connection.keyPath) {
+    args.push('-i', connection.keyPath);
+  }
+
+  return args;
+}
+
+function sshTarget(connection: Extract<Connection, { type: 'ssh' }>): string {
+  return connection.username ? `${connection.username}@${connection.host}` : connection.host;
+}
+
+function sshEndpoint(connection: Extract<Connection, { type: 'ssh' }>): string {
+  return `${sshTarget(connection)}:${connection.port}`;
 }
 
 function buildEnv(): Record<string, string> {
@@ -252,4 +359,66 @@ function remoteLoginShell(): string {
 
 function stripAnsi(value: string): string {
   return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+
+let cachedPlinkPath: string | null | undefined;
+
+async function findPlink(): Promise<string | undefined> {
+  if (cachedPlinkPath !== undefined) {
+    return cachedPlinkPath || undefined;
+  }
+
+  const fromPath = await firstWhereResult('plink.exe');
+  if (fromPath) {
+    cachedPlinkPath = fromPath;
+    return fromPath;
+  }
+
+  const candidates = [
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'PuTTY', 'plink.exe'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'PuTTY', 'plink.exe'),
+    process.env.LocalAppData && path.join(process.env.LocalAppData, 'Programs', 'PuTTY', 'plink.exe')
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      cachedPlinkPath = candidate;
+      return candidate;
+    } catch {
+      // Continue checking the remaining common PuTTY install locations.
+    }
+  }
+
+  cachedPlinkPath = null;
+  return undefined;
+}
+
+function firstWhereResult(command: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile('where.exe', [command], { windowsHide: true }, (error, stdout) => {
+      if (error) {
+        resolve(undefined);
+        return;
+      }
+
+      resolve(stdout.split(/\r?\n/).find(Boolean)?.trim());
+    });
+  });
+}
+
+function terminalMessageCommand(lines: string[]): SpawnCommand {
+  const command = lines.map((line) => `Write-Host ${quotePowerShell(line)}`).join('; ');
+  return {
+    file: 'powershell.exe',
+    args: ['-NoLogo', '-NoProfile', '-Command', command]
+  };
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function isPpkKey(keyPath: string | undefined): boolean {
+  return Boolean(keyPath?.toLowerCase().endsWith('.ppk'));
 }

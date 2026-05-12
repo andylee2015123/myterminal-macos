@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { clipboard, contextBridge, ipcRenderer } from 'electron';
 import type {
   Connection,
   ConnectionDraft,
@@ -16,6 +16,9 @@ const terminalApi = {
   saveConnection: (draft: ConnectionDraft): Promise<Connection> => ipcRenderer.invoke('connections:save', draft),
   deleteConnection: (id: string): Promise<void> => ipcRenderer.invoke('connections:delete', id),
   importSshConfig: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-ssh-config'),
+  importPuttySsh: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-putty-ssh'),
+  readClipboardText: (): string => clipboard.readText(),
+  writeClipboardText: (text: string): void => clipboard.writeText(text),
   pickFolder: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-folder'),
   pickFile: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-file'),
   createSession: (request: CreateSessionRequest): Promise<SessionInfo> =>

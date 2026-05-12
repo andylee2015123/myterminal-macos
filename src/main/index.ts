@@ -43,6 +43,7 @@ function registerIpc(): void {
   ipcMain.handle('connections:save', (_event, draft: ConnectionDraft) => store.save(draft));
   ipcMain.handle('connections:delete', (_event, id: string) => store.delete(id));
   ipcMain.handle('connections:import-ssh-config', () => store.importSshConfig());
+  ipcMain.handle('connections:import-putty-ssh', () => store.importPuttySshSessions());
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const result = await dialog.showOpenDialog({

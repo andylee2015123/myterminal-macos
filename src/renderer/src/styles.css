@@ -34,6 +34,7 @@ button {
   grid-template-columns: 338px minmax(640px, 1fr);
   width: 100vw;
   height: 100vh;
+  min-height: 0;
   background: #f6f7f9;
 }
 
@@ -45,6 +46,9 @@ button {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
   border-right: 1px solid #dedee4;
   background: #fbfbfc;
   padding: 18px;
@@ -262,7 +266,7 @@ button {
 .connection-row {
   position: relative;
   display: grid;
-  grid-template-columns: 28px 1fr 62px;
+  grid-template-columns: 28px minmax(0, 1fr) 94px;
   align-items: center;
   gap: 6px;
   min-height: 58px;
@@ -373,6 +377,7 @@ button {
   display: grid;
   grid-template-columns: 380px minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   height: 100vh;
 }
 
@@ -382,6 +387,7 @@ button {
 
 .editor-panel {
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid #dedee4;
   background: #f6f7f9;
   overflow: auto;
@@ -547,6 +553,15 @@ select:focus {
   font-size: 13px;
 }
 
+.hint-line {
+  border: 1px solid #c8d8f6;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #1e3a8a;
+  background: #eff6ff;
+  font-size: 13px;
+}
+
 .editor-actions {
   display: flex;
   justify-content: flex-end;
@@ -564,6 +579,7 @@ select:focus {
   display: grid;
   grid-template-rows: 46px 62px minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   background: #101113;
 }
 
@@ -697,6 +713,16 @@ select:focus {
   background: #3f3f46;
 }
 
+.tool-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tool-button:disabled:hover {
+  color: #d4d4d8;
+  background: #26272b;
+}
+
 .admin-button.active {
   color: #a7f3d0;
   background: #064e3b;
@@ -736,8 +762,44 @@ select:focus {
   display: block;
 }
 
+.terminal-mount {
+  width: 100%;
+  height: 100%;
+}
+
 .terminal-pane .xterm {
   height: 100%;
+}
+
+.terminal-context-menu {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  width: 142px;
+  gap: 2px;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 5px;
+  background: #1f2024;
+  box-shadow: 0 14px 28px rgb(0 0 0 / 0.35);
+}
+
+.terminal-context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  border-radius: 6px;
+  padding: 0 8px;
+  color: #f4f4f5;
+  background: transparent;
+  cursor: pointer;
+}
+
+.terminal-context-menu button:hover {
+  background: #3f3f46;
 }
 
 .terminal-empty,

@@ -1,35 +1,49 @@
 # MyTerminal
 
-MyTerminal is a Windows desktop terminal app built with Electron, React, TypeScript, xterm.js, and node-pty.
+MyTerminal is a macOS desktop terminal app built with Electron, React, TypeScript, xterm.js, and node-pty.
 
 It manages local folder connections and remote SSH connections, then opens each session in a tabbed terminal UI.
 
-## Package as a Windows EXE
+## Package for macOS
+
+Prerequisite: install Node.js with npm.
 
 Install dependencies once on the build machine:
 
-```powershell
+```sh
 npm install
 ```
 
-Create the Windows installer:
+Create the macOS ZIP package:
 
-```powershell
-npm run package:win
+```sh
+npm run package:mac
+```
+
+Create a DMG on a regular macOS terminal:
+
+```sh
+npm run dmg:mac
+```
+
+Create only an unpacked `.app` for quick local testing:
+
+```sh
+npm run pack:mac
 ```
 
 Short alias:
 
-```powershell
-npm run exe
+```sh
+npm run app
 ```
 
 The packaging script does the following:
 
-- Generates the Windows icon from `assets/app-icon.png`
+- Generates the macOS icon from `assets/app-icon.png`
 - Runs the TypeScript and Electron/Vite production build
-- Rebuilds native dependencies such as `node-pty` for Electron
-- Creates a Windows NSIS installer
+- Keeps native dependencies such as `node-pty` outside the app ASAR archive
+- Creates a macOS `.zip` package
 
 The generated files are written to:
 
@@ -40,41 +54,45 @@ release/
 Main output:
 
 ```text
-release/MyTerminal-0.1.0-Setup.exe
+release/MyTerminal-0.1.0-<arch>.zip
 ```
 
-Quick local test executable:
+Quick local test app:
 
 ```text
-release/win-unpacked/MyTerminal.exe
+release/mac-<arch>/MyTerminal.app
 ```
 
-For normal use, install with `MyTerminal-0.1.0-Setup.exe`. Use `win-unpacked/MyTerminal.exe` only for quick local testing, and keep the whole `win-unpacked` folder intact.
+For normal use, unzip the package and move `MyTerminal.app` into Applications.
 
-## Run the Packaged App on Windows
+Verified on this project:
 
-1. Double-click `release/MyTerminal-0.1.0-Setup.exe`.
-2. Choose the install location when prompted.
-3. Finish the installer.
-4. Launch MyTerminal from the desktop shortcut or the Start Menu shortcut.
-
-The installer is configured to create:
-
-- Desktop shortcut
-- Start Menu shortcut
-- Installed app executable with the MyTerminal icon
-
-Because this project is not code-signed yet, Windows SmartScreen may show a warning. For public distribution, add code signing before release.
+```text
+release/MyTerminal-0.1.0-arm64.zip
+release/mac-arm64/MyTerminal.app
+```
 
 ## Development Run
 
 For development only:
 
-```powershell
+```sh
 npm run dev
 ```
 
-End users should not need `npm run dev`; they should use the packaged installer instead.
+End users should not need `npm run dev`; they should use the packaged app instead.
+
+The default package config uses the `node-pty` macOS prebuild and skips Electron's automatic native rebuild. If a native dependency ever needs to be rebuilt manually, run:
+
+```sh
+npm run rebuild:native
+```
+
+## Notes
+
+- Local connections default to `zsh`.
+- SSH connections use the system `ssh` command.
+- This project is not code-signed or notarized yet. For public distribution, add Apple Developer signing and notarization before release.
 
 ## License
 

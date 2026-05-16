@@ -1,6 +1,5 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron';
 import type {
-  AppPrivilegeStatus,
   Connection,
   ConnectionDraft,
   ConnectionExportResult,
@@ -12,8 +11,6 @@ import type {
 } from '../shared/types';
 
 const terminalApi = {
-  getPrivilegeStatus: (): Promise<AppPrivilegeStatus> => ipcRenderer.invoke('app:privilege-status'),
-  relaunchAsAdmin: (): Promise<void> => ipcRenderer.invoke('app:relaunch-as-admin'),
   listConnections: (): Promise<Connection[]> => ipcRenderer.invoke('connections:list'),
   saveConnection: (draft: ConnectionDraft): Promise<Connection> => ipcRenderer.invoke('connections:save', draft),
   deleteConnection: (id: string): Promise<void> => ipcRenderer.invoke('connections:delete', id),
@@ -22,13 +19,11 @@ const terminalApi = {
   importConnections: (): Promise<ConnectionImportResult | undefined> =>
     ipcRenderer.invoke('connections:import-file'),
   importSshConfig: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-ssh-config'),
-  importPuttySsh: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-putty-ssh'),
   readClipboardText: (): string => clipboard.readText(),
   writeClipboardText: (text: string): void => clipboard.writeText(text),
   pickFolder: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-folder'),
   pickFile: (): Promise<string | undefined> => ipcRenderer.invoke('dialog:pick-file'),
-  openFolderInExplorer: (folderPath: string): Promise<void> =>
-    ipcRenderer.invoke('folder:open-in-explorer', folderPath),
+  openFolder: (folderPath: string): Promise<void> => ipcRenderer.invoke('folder:open', folderPath),
   createSession: (request: CreateSessionRequest): Promise<SessionInfo> =>
     ipcRenderer.invoke('sessions:create', request),
   writeSession: (sessionId: string, data: string): Promise<void> =>

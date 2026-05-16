@@ -1,5 +1,4 @@
 import { app, safeStorage } from 'electron';
-import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -153,55 +152,6 @@ export class ConnectionStore {
     return additions.map((connection) => this.toPublic(connection));
   }
 
-  async importPuttySshSessions(): Promise<Connection[]> {
-    const parsed = await readPuttySshSessions();
-    if (parsed.length === 0) {
-      return [];
-    }
-
-    const existing = await this.read();
-    const next = [...existing];
-    const existingPuttyByName = new Map<string, number>();
-    const existingLegacyPuttyByEndpoint = new Map<string, number>();
-
-    next.forEach((connection, index) => {
-      if (connection.type !== 'ssh' || !isPuttyConnection(connection)) {
-        return;
-      }
-
-      if (connection.puttySessionName) {
-        existingPuttyByName.set(puttySessionKey(connection.puttySessionName), index);
-      } else {
-        existingLegacyPuttyByEndpoint.set(connectionEndpointKey(connection), index);
-      }
-    });
-
-    const now = new Date().toISOString();
-    const additions: StoredConnection[] = [];
-    const updates: StoredConnection[] = [];
-
-    for (const session of parsed) {
-      const puttyKey = puttySessionKey(session.name);
-      const legacyIndex = existingLegacyPuttyByEndpoint.get(puttyEndpointKey(session));
-      const existingIndex = existingPuttyByName.get(puttyKey) ?? legacyIndex;
-
-      if (existingIndex !== undefined) {
-        const updated = updatePuttyConnection(next[existingIndex], session, now);
-        next[existingIndex] = updated;
-        updates.push(updated);
-        continue;
-      }
-
-      additions.push(createPuttyConnection(session, now, additions.length));
-    }
-
-    if (additions.length > 0 || updates.length > 0) {
-      await this.write([...additions, ...next]);
-    }
-
-    return [...additions, ...updates].map((connection) => this.toPublic(connection));
-  }
-
   async exportToFile(filePath: string): Promise<number> {
     const connections = await this.read();
     const payload: ExportFile = {
@@ -265,7 +215,9 @@ export class ConnectionStore {
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as StoreFile;
-      this.cache = Array.isArray(parsed.connections) ? parsed.connections : [];
+      this.cache = Array.isArray(parsed.connections)
+        ? parsed.connections.map((connection) => normalizeStoredConnection(connection))
+        : [];
     } catch {
       this.cache = [];
     }
@@ -298,12 +250,14 @@ export class ConnectionStore {
     };
 
     if (draft.type === 'local') {
+      const shell = normalizeShellKind(draft.shell) || defaultShellKind();
+
       return {
         ...base,
         type: 'local',
         localPath: draft.localPath.trim(),
-        shell: draft.shell,
-        shellPath: draft.shell === 'custom' ? draft.shellPath?.trim() || undefined : undefined
+        shell,
+        shellPath: shell === 'custom' ? draft.shellPath?.trim() || undefined : undefined
       };
     }
 
@@ -328,7 +282,6 @@ export class ConnectionStore {
       keyPath: draft.keyPath?.trim() || undefined,
       remotePath: draft.remotePath?.trim() || undefined,
       sshConfigHost: draft.sshConfigHost?.trim() || undefined,
-      puttySessionName: draft.puttySessionName?.trim() || undefined,
       extraArgs: draft.extraArgs?.trim() || undefined,
       encryptedPassword
     };
@@ -364,6 +317,23 @@ function normalizeTags(tags: string[]): string[] {
         .slice(0, 8)
     )
   );
+}
+
+function normalizeStoredConnection(connection: StoredConnection): StoredConnection {
+  if (connection.type !== 'local') {
+    return connection;
+  }
+
+  const shell = normalizeShellKind(connection.shell) || defaultShellKind();
+  return {
+    ...connection,
+    shell,
+    shellPath: shell === 'custom' ? connection.shellPath : undefined
+  };
+}
+
+function defaultShellKind(): ShellKind {
+  return 'zsh';
 }
 
 function pickColor(index: number): string {
@@ -423,7 +393,7 @@ function normalizeImportedConnection(value: unknown, now: string, colorIndex: nu
   };
 
   if (type === 'local') {
-    const shell = shellField(value.shell) || 'powershell';
+    const shell = shellField(value.shell) || defaultShellKind();
     const localPath = textField(value, 'localPath');
     const shellPath = optionalTextField(value, 'shellPath');
 
@@ -460,7 +430,6 @@ function normalizeImportedConnection(value: unknown, now: string, colorIndex: nu
     keyPath,
     remotePath: optionalTextField(value, 'remotePath'),
     sshConfigHost,
-    puttySessionName: optionalTextField(value, 'puttySessionName'),
     extraArgs: optionalTextField(value, 'extraArgs')
   };
 }
@@ -506,8 +475,7 @@ function connectionIdentityKey(connection: StoredConnection): string {
     (connection.sshConfigHost || '').toLowerCase(),
     connection.host.toLowerCase(),
     connection.username.toLowerCase(),
-    connection.port,
-    (connection.puttySessionName || '').toLowerCase()
+    connection.port
   ].join('|');
 }
 
@@ -549,7 +517,11 @@ function portField(value: unknown): number | undefined {
 }
 
 function shellField(value: unknown): ShellKind | undefined {
-  if (value === 'powershell' || value === 'pwsh' || value === 'cmd' || value === 'custom') {
+  return normalizeShellKind(value);
+}
+
+function normalizeShellKind(value: unknown): ShellKind | undefined {
+  if (value === 'zsh' || value === 'bash' || value === 'sh' || value === 'custom') {
     return value;
   }
 
@@ -628,235 +600,4 @@ function parseSshConfig(content: string): ParsedSshHost[] {
   }
 
   return hosts;
-}
-
-interface PuttyRegistrySession {
-  Name?: unknown;
-  HostName?: unknown;
-  Protocol?: unknown;
-  PortNumber?: unknown;
-  UserName?: unknown;
-  PublicKeyFile?: unknown;
-}
-
-interface ParsedPuttySession {
-  name: string;
-  hostName: string;
-  user: string;
-  port: number;
-  identityFile?: string;
-}
-
-function createPuttyConnection(session: ParsedPuttySession, now: string, colorIndex: number): StoredConnection {
-  return {
-    id: randomUUID(),
-    type: 'ssh',
-    name: session.name,
-    group: 'PuTTY',
-    color: pickColor(colorIndex),
-    tags: puttyTags(session.identityFile),
-    favorite: false,
-    createdAt: now,
-    updatedAt: now,
-    host: session.hostName,
-    port: session.port,
-    username: session.user,
-    authType: session.identityFile ? 'key' : 'agent',
-    keyPath: session.identityFile,
-    puttySessionName: session.name
-  };
-}
-
-function updatePuttyConnection(
-  connection: StoredConnection,
-  session: ParsedPuttySession,
-  now: string
-): StoredConnection {
-  if (connection.type !== 'ssh') {
-    return connection;
-  }
-
-  return {
-    ...connection,
-    group: connection.group || 'PuTTY',
-    tags: mergeTags(connection.tags, puttyTags(session.identityFile)),
-    updatedAt: now,
-    host: session.hostName,
-    port: session.port,
-    username: session.user,
-    authType: session.identityFile ? 'key' : 'agent',
-    keyPath: session.identityFile,
-    puttySessionName: session.name
-  };
-}
-
-function isPuttyConnection(connection: StoredConnection): boolean {
-  return (
-    connection.type === 'ssh' &&
-    (Boolean(connection.puttySessionName) || connection.group === 'PuTTY' || connection.tags.includes('putty'))
-  );
-}
-
-function puttyTags(identityFile: string | undefined): string[] {
-  return identityFile?.toLowerCase().endsWith('.ppk') ? ['putty', 'ppk'] : ['putty'];
-}
-
-function mergeTags(current: string[], next: string[]): string[] {
-  return normalizeTags([...current, ...next]);
-}
-
-function puttySessionKey(name: string): string {
-  return name.trim().toLowerCase();
-}
-
-function puttyEndpointKey(session: ParsedPuttySession): string {
-  return `${session.hostName}|${session.user}|${session.port}`.toLowerCase();
-}
-
-function connectionEndpointKey(connection: Extract<StoredConnection, { type: 'ssh' }>): string {
-  return `${connection.host}|${connection.username}|${connection.port}`.toLowerCase();
-}
-
-async function readPuttySshSessions(): Promise<ParsedPuttySession[]> {
-  if (process.platform !== 'win32') {
-    return [];
-  }
-
-  const script = [
-    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    '$OutputEncoding = [Console]::OutputEncoding',
-    "$root = 'Registry::HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions'",
-    "if (-not (Test-Path -LiteralPath $root)) { '[]'; exit 0 }",
-    '$sessions = @(Get-ChildItem -LiteralPath $root | ForEach-Object {',
-    '  $props = Get-ItemProperty -LiteralPath $_.PSPath',
-    '  [PSCustomObject]@{',
-    '    Name = $_.PSChildName',
-    '    HostName = $props.HostName',
-    '    Protocol = $props.Protocol',
-    '    PortNumber = $props.PortNumber',
-    '    UserName = $props.UserName',
-    '    PublicKeyFile = $props.PublicKeyFile',
-    '  }',
-    '})',
-    'ConvertTo-Json -Compress -InputObject $sessions'
-  ].join('\n');
-
-  const raw = await execPowerShell(script);
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(raw || '[]');
-  } catch {
-    return [];
-  }
-
-  const sessions = Array.isArray(parsed) ? parsed : [parsed];
-  return sessions
-    .map((session) => normalizePuttySession(session as PuttyRegistrySession))
-    .filter((session): session is ParsedPuttySession => Boolean(session));
-}
-
-function execPowerShell(command: string): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      { windowsHide: true },
-      (error, stdout) => {
-        if (error) {
-          resolve('');
-          return;
-        }
-
-        resolve(stdout.trim());
-      }
-    );
-  });
-}
-
-function normalizePuttySession(session: PuttyRegistrySession): ParsedPuttySession | undefined {
-  const name = decodePuttySessionName(toText(session.Name));
-  if (!name || name.toLowerCase() === 'default settings') {
-    return undefined;
-  }
-
-  const protocol = toText(session.Protocol).toLowerCase();
-  if (protocol && protocol !== 'ssh') {
-    return undefined;
-  }
-
-  let hostName = toText(session.HostName);
-  if (!hostName) {
-    return undefined;
-  }
-
-  let user = toText(session.UserName);
-  if (!user && hostName.includes('@')) {
-    const splitIndex = hostName.lastIndexOf('@');
-    user = hostName.slice(0, splitIndex).trim();
-    hostName = hostName.slice(splitIndex + 1).trim();
-  }
-
-  const hostAndPort = splitHostAndPort(hostName);
-  hostName = hostAndPort.hostName;
-
-  if (!hostName) {
-    return undefined;
-  }
-
-  const identityFile = toText(session.PublicKeyFile);
-
-  return {
-    name,
-    hostName,
-    user,
-    port: normalizePort(session.PortNumber, hostAndPort.port),
-    identityFile: identityFile || undefined
-  };
-}
-
-function decodePuttySessionName(value: string): string {
-  if (!value) {
-    return '';
-  }
-
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16))
-    );
-  }
-}
-
-function splitHostAndPort(value: string): { hostName: string; port?: number } {
-  const hostName = value.trim();
-  const match = /^([^:]+):(\d+)$/.exec(hostName);
-  if (!match) {
-    return { hostName };
-  }
-
-  return {
-    hostName: match[1].trim(),
-    port: Number(match[2]) || undefined
-  };
-}
-
-function normalizePort(value: unknown, fallback?: number): number {
-  if (typeof value === 'number' && value > 0) {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    const parsed = value.startsWith('0x') ? Number.parseInt(value, 16) : Number(value);
-    if (parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return fallback || 22;
-}
-
-function toText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
 }

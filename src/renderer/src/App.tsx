@@ -21,8 +21,6 @@ import {
   Plus,
   Search,
   Server,
-  Shield,
-  ShieldCheck,
   Star,
   StarOff,
   TerminalSquare,
@@ -33,7 +31,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import type {
-  AppPrivilegeStatus,
   Connection,
   ConnectionDraft,
   LocalConnection,
@@ -54,7 +51,7 @@ const EMPTY_LOCAL_DRAFT: Omit<LocalConnection, 'id' | 'createdAt' | 'updatedAt'>
   tags: [],
   favorite: false,
   localPath: '',
-  shell: 'powershell'
+  shell: 'zsh'
 };
 
 const EMPTY_SSH_DRAFT: Omit<SshConnection, 'id' | 'createdAt' | 'updatedAt' | 'hasPassword'> & {
@@ -74,7 +71,6 @@ const EMPTY_SSH_DRAFT: Omit<SshConnection, 'id' | 'createdAt' | 'updatedAt' | 'h
   keyPath: '',
   remotePath: '',
   sshConfigHost: '',
-  puttySessionName: '',
   extraArgs: ''
 };
 
@@ -96,10 +92,6 @@ export function App(): JSX.Element {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
-  const [privilegeStatus, setPrivilegeStatus] = useState<AppPrivilegeStatus>({
-    isWindows: false,
-    isAdmin: false
-  });
   const [connectionPanelVisible, setConnectionPanelVisible] = useState(
     () => window.localStorage.getItem('connectionPanelVisible') !== 'false'
   );
@@ -115,12 +107,6 @@ export function App(): JSX.Element {
   useEffect(() => {
     loadConnections();
   }, [loadConnections]);
-
-  useEffect(() => {
-    window.terminalApi.getPrivilegeStatus().then(setPrivilegeStatus).catch(() => {
-      setPrivilegeStatus({ isWindows: false, isAdmin: false });
-    });
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem('connectionPanelVisible', String(connectionPanelVisible));
@@ -196,8 +182,8 @@ export function App(): JSX.Element {
     () => connections.find((connection) => connection.id === activeSession?.connectionId),
     [connections, activeSession?.connectionId]
   );
-  const activeLocalPowerShellConnection =
-    activeConnection && isLocalPowerShellConnection(activeConnection) ? activeConnection : undefined;
+  const activeLocalConnection =
+    activeConnection && activeConnection.type === 'local' ? activeConnection : undefined;
 
   const startNewLocal = (): void => {
     setEditorMode('local-new');
@@ -294,16 +280,6 @@ export function App(): JSX.Element {
     setMessage(imported.length ? `Imported ${imported.length} SSH connection(s).` : 'No new SSH config hosts found.');
   };
 
-  const importPuttySsh = async (): Promise<void> => {
-    const imported = await window.terminalApi.importPuttySsh();
-    await loadConnections();
-    setMessage(
-      imported.length
-        ? `Imported or updated ${imported.length} PuTTY SSH connection(s).`
-        : 'No new PuTTY SSH sessions found.'
-    );
-  };
-
   const exportConnections = async (): Promise<void> => {
     try {
       const result = await window.terminalApi.exportConnections();
@@ -329,16 +305,6 @@ export function App(): JSX.Element {
       setMessage(`Import complete: ${result.added} added, ${result.updated} updated${skipped}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Connection import failed.');
-    }
-  };
-
-  const requestAdminRelaunch = async (): Promise<void> => {
-    try {
-      setMessage('Requesting administrator relaunch...');
-      await window.terminalApi.relaunchAsAdmin();
-    } catch (error) {
-      const text = error instanceof Error ? error.message : 'Administrator relaunch failed.';
-      setMessage(text);
     }
   };
 
@@ -379,15 +345,15 @@ export function App(): JSX.Element {
     terminalActionsRef.current.get(activeSessionId)?.paste();
   };
 
-  const openActiveFolderInExplorer = async (): Promise<void> => {
-    if (!activeLocalPowerShellConnection) {
+  const openActiveFolderInFinder = async (): Promise<void> => {
+    if (!activeLocalConnection) {
       return;
     }
 
     try {
-      await window.terminalApi.openFolderInExplorer(activeLocalPowerShellConnection.localPath);
+      await window.terminalApi.openFolder(activeLocalConnection.localPath);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to open folder in Explorer.');
+      setMessage(error instanceof Error ? error.message : 'Failed to open folder in Finder.');
     }
   };
 
@@ -451,9 +417,6 @@ export function App(): JSX.Element {
           </button>
           <button className="ghost-action wide" onClick={importSshConfig}>
             <Import size={16} /> Import SSH config
-          </button>
-          <button className="ghost-action wide" onClick={importPuttySsh}>
-            <Import size={16} /> Import PuTTY
           </button>
         </div>
 
@@ -576,11 +539,11 @@ export function App(): JSX.Element {
               <div className="terminal-subtitle">{activeSession?.subtitle || 'Open a connection to start.'}</div>
             </div>
             <div className="terminal-tools">
-              {activeLocalPowerShellConnection && (
+              {activeLocalConnection && (
                 <button
                   className="tool-button"
-                  onClick={openActiveFolderInExplorer}
-                  title="Open folder in Explorer"
+                  onClick={openActiveFolderInFinder}
+                  title="Open folder in Finder"
                 >
                   <FolderOpen size={15} />
                 </button>
@@ -601,20 +564,6 @@ export function App(): JSX.Element {
               >
                 <ClipboardPaste size={15} />
               </button>
-              {privilegeStatus.isWindows && (
-                <button
-                  className={`admin-button ${privilegeStatus.isAdmin ? 'active' : ''}`}
-                  onClick={privilegeStatus.isAdmin ? undefined : requestAdminRelaunch}
-                  title={
-                    privilegeStatus.isAdmin
-                      ? 'Running as administrator'
-                      : 'Relaunch MyTerminal as administrator'
-                  }
-                >
-                  {privilegeStatus.isAdmin ? <ShieldCheck size={15} /> : <Shield size={15} />}
-                  <span>{privilegeStatus.isAdmin ? 'Admin' : 'Run admin'}</span>
-                </button>
-              )}
               <div className={`status-pill ${activeSession?.status || 'idle'}`}>
                 {activeSession?.status || 'idle'}
               </div>
@@ -855,15 +804,15 @@ function LocalFields({
           value={draft.shell}
           onChange={(event) => onDraftChange('shell', event.target.value as ShellKind)}
         >
-          <option value="powershell">Windows PowerShell</option>
-          <option value="pwsh">PowerShell 7</option>
-          <option value="cmd">Command Prompt</option>
-          <option value="custom">Custom executable</option>
+          <option value="zsh">zsh</option>
+          <option value="bash">bash</option>
+          <option value="sh">sh</option>
+          <option value="custom">Custom shell</option>
         </select>
       </label>
       {draft.shell === 'custom' && (
         <label>
-          <span>Executable</span>
+          <span>Shell path</span>
           <input
             value={draft.shellPath || ''}
             onChange={(event) => onDraftChange('shellPath', event.target.value)}
@@ -915,16 +864,6 @@ function SshFields({
           onChange={(event) => onDraftChange('sshConfigHost', event.target.value)}
         />
       </label>
-      {draft.puttySessionName && (
-        <label>
-          <span>PuTTY session</span>
-          <input
-            value={draft.puttySessionName}
-            onChange={(event) => onDraftChange('puttySessionName', event.target.value)}
-          />
-        </label>
-      )}
-
       <div className="auth-row">
         {(['agent', 'key', 'password'] as SshAuthType[]).map((authType) => (
           <button
@@ -953,10 +892,6 @@ function SshFields({
             </button>
           </div>
         </label>
-      )}
-
-      {draft.puttySessionName && draft.keyPath?.toLowerCase().endsWith('.ppk') && (
-        <div className="hint-line">Connect uses PuTTY/plink for this .ppk session.</div>
       )}
 
       {draft.authType === 'password' && (
@@ -1026,7 +961,7 @@ function TerminalPane({
   useEffect(() => {
     const terminal = new Terminal({
       cursorBlink: true,
-      fontFamily: 'Cascadia Mono, Consolas, monospace',
+      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
       lineHeight: 1.15,
       scrollback: 8000,
@@ -1077,6 +1012,16 @@ function TerminalPane({
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') {
         return true;
+      }
+
+      if (event.metaKey && event.code === 'KeyC') {
+        copySelection();
+        return false;
+      }
+
+      if (event.metaKey && event.code === 'KeyV') {
+        pasteClipboard();
+        return false;
       }
 
       if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
@@ -1253,7 +1198,7 @@ function validateDraft(draft: DraftState): string | undefined {
     }
 
     if (draft.shell === 'custom' && !draft.shellPath?.trim()) {
-      return 'Custom executable is required.';
+      return 'Custom shell path is required.';
     }
   }
 
@@ -1277,10 +1222,6 @@ function validateDraft(draft: DraftState): string | undefined {
 function formatSshEndpoint(connection: Pick<SshConnection, 'host' | 'port' | 'username'>): string {
   const target = connection.username ? `${connection.username}@${connection.host}` : connection.host;
   return `${target}:${connection.port}`;
-}
-
-function isLocalPowerShellConnection(connection: Connection): connection is LocalConnection {
-  return connection.type === 'local' && (connection.shell === 'powershell' || connection.shell === 'pwsh');
 }
 
 function clamp(value: number, min: number, max: number): number {

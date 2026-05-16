@@ -1,22 +1,25 @@
 {
   "name": "myterminal",
   "version": "0.1.0",
-  "description": "A Windows desktop terminal with managed local and SSH connections.",
+  "description": "A macOS desktop terminal with managed local and SSH connections.",
   "license": "MIT",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder --win nsis",
-    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-exe.ps1",
-    "icon:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-windows-icon.ps1",
-    "exe": "npm run package:win",
+    "pack": "npm run pack:mac",
+    "pack:mac": "npm run icon:mac && npm run build && electron-builder --mac dir",
+    "dist": "npm run dist:mac",
+    "dist:mac": "npm run icon:mac && npm run build && electron-builder --mac zip",
+    "dmg:mac": "npm run icon:mac && npm run build && electron-builder --mac dmg",
+    "package:mac": "bash scripts/build-macos-app.sh",
+    "icon:mac": "bash scripts/create-macos-icon.sh",
+    "app": "npm run package:mac",
     "installer": "npm run dist",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "postinstall": "electron-builder install-app-deps"
+    "rebuild:native": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -38,31 +41,55 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   },
+  "overrides": {
+    "node-gyp": "^10.3.1"
+  },
   "build": {
     "appId": "com.myterminal.app",
     "productName": "MyTerminal",
     "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "afterPack": "scripts/prune-macos-package.js",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
     "files": [
       "out/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!assets/app-icon-source.png"
     ],
-    "artifactName": "${productName}-${version}-Setup.${ext}",
-    "win": {
-      "target": "nsis",
-      "icon": "assets/app-icon.ico"
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/app-icon.icns",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "MyTerminal",
+        "CFBundleName": "MyTerminal"
+      }
     },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "MyTerminal",
-      "installerIcon": "assets/app-icon.ico",
-      "uninstallerIcon": "assets/app-icon.ico"
+    "dmg": {
+      "title": "MyTerminal ${version}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   }
 }

@@ -1,5 +1,5 @@
 export type ConnectionType = 'local' | 'ssh';
-export type ShellKind = 'powershell' | 'pwsh' | 'cmd' | 'custom';
+export type ShellKind = 'zsh' | 'bash' | 'sh' | 'custom';
 export type SshAuthType = 'agent' | 'key' | 'password';
 
 export interface BaseConnection {
@@ -31,7 +31,6 @@ export interface SshConnection extends BaseConnection {
   keyPath?: string;
   remotePath?: string;
   sshConfigHost?: string;
-  puttySessionName?: string;
   extraArgs?: string;
   hasPassword?: boolean;
 }
@@ -73,11 +72,6 @@ export interface SessionDataEvent {
 export interface SessionExitEvent {
   sessionId: string;
   exitCode: number;
-}
-
-export interface AppPrivilegeStatus {
-  isWindows: boolean;
-  isAdmin: boolean;
 }
 
 export interface ConnectionExportResult {

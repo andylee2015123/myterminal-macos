@@ -1,8 +1,4 @@
 import { BrowserWindow } from 'electron';
-import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
 import type { Connection, CreateSessionRequest, SessionInfo } from '../shared/types';
@@ -117,24 +113,7 @@ export class PtyManager {
 
   private async commandForConnection(connection: Connection): Promise<SpawnCommand> {
     if (connection.type === 'local') {
-      if (connection.shell === 'pwsh') {
-        return { file: 'pwsh.exe', args: ['-NoLogo'], cwd: connection.localPath };
-      }
-
-      if (connection.shell === 'cmd') {
-        return { file: 'cmd.exe', args: [], cwd: connection.localPath };
-      }
-
-      if (connection.shell === 'custom' && connection.shellPath) {
-        return { file: connection.shellPath, args: [], cwd: connection.localPath };
-      }
-
-      return { file: 'powershell.exe', args: ['-NoLogo'], cwd: connection.localPath };
-    }
-
-    const puttyCommand = await commandForPuttyConnection(connection);
-    if (puttyCommand) {
-      return puttyCommand;
+      return commandForLocalConnection(connection);
     }
 
     const args: string[] = [];
@@ -161,7 +140,7 @@ export class PtyManager {
     }
 
     return {
-      file: 'ssh.exe',
+      file: 'ssh',
       args,
       password:
         connection.authType === 'password' && connection.hasPassword
@@ -212,69 +191,28 @@ export class PtyManager {
   }
 }
 
+function commandForLocalConnection(connection: Extract<Connection, { type: 'local' }>): SpawnCommand {
+  if (connection.shell === 'custom' && connection.shellPath) {
+    return { file: connection.shellPath, args: [], cwd: connection.localPath };
+  }
+
+  if (connection.shell === 'bash') {
+    return { file: '/bin/bash', args: ['-l'], cwd: connection.localPath };
+  }
+
+  if (connection.shell === 'sh') {
+    return { file: '/bin/sh', args: [], cwd: connection.localPath };
+  }
+
+  return { file: '/bin/zsh', args: ['-l'], cwd: connection.localPath };
+}
+
 function subtitleForConnection(connection: Connection): string {
   if (connection.type === 'local') {
     return connection.localPath;
   }
 
   return sshEndpoint(connection);
-}
-
-async function commandForPuttyConnection(
-  connection: Extract<Connection, { type: 'ssh' }>
-): Promise<SpawnCommand | undefined> {
-  const puttySessionName = connection.puttySessionName || inferPuttySessionName(connection);
-  const usesPpkKey = isPpkKey(connection.keyPath);
-  if (!puttySessionName && !usesPpkKey) {
-    return undefined;
-  }
-
-  const plinkPath = await findPlink();
-  if (plinkPath) {
-    const args = puttySessionName
-      ? ['-load', puttySessionName]
-      : puttyDirectArgs(connection);
-    if (connection.remotePath) {
-      args.push('-t');
-    }
-
-    if (!puttySessionName) {
-      args.push(sshTarget(connection));
-    }
-
-    if (connection.remotePath) {
-      args.push(`cd ${quotePosix(connection.remotePath)} && exec ${remoteLoginShell()}`);
-    }
-
-    return { file: plinkPath, args };
-  }
-
-  const subject = puttySessionName ? `PuTTY session "${puttySessionName}"` : `PPK key "${connection.keyPath}"`;
-  return terminalMessageCommand([
-    `${subject} needs PuTTY/plink for this connection.`,
-    'Install plink.exe from PuTTY or convert the key to OpenSSH format before connecting with ssh.exe.'
-  ]);
-}
-
-function inferPuttySessionName(connection: Extract<Connection, { type: 'ssh' }>): string | undefined {
-  if (connection.group === 'PuTTY' || connection.tags.includes('putty')) {
-    return connection.name;
-  }
-
-  return undefined;
-}
-
-function puttyDirectArgs(connection: Extract<Connection, { type: 'ssh' }>): string[] {
-  const args = ['-ssh'];
-  if (connection.port && connection.port !== 22) {
-    args.push('-P', String(connection.port));
-  }
-
-  if (connection.keyPath) {
-    args.push('-i', connection.keyPath);
-  }
-
-  return args;
 }
 
 function sshTarget(connection: Extract<Connection, { type: 'ssh' }>): string {
@@ -359,66 +297,4 @@ function remoteLoginShell(): string {
 
 function stripAnsi(value: string): string {
   return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-}
-
-let cachedPlinkPath: string | null | undefined;
-
-async function findPlink(): Promise<string | undefined> {
-  if (cachedPlinkPath !== undefined) {
-    return cachedPlinkPath || undefined;
-  }
-
-  const fromPath = await firstWhereResult('plink.exe');
-  if (fromPath) {
-    cachedPlinkPath = fromPath;
-    return fromPath;
-  }
-
-  const candidates = [
-    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'PuTTY', 'plink.exe'),
-    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'PuTTY', 'plink.exe'),
-    process.env.LocalAppData && path.join(process.env.LocalAppData, 'Programs', 'PuTTY', 'plink.exe')
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    try {
-      await access(candidate);
-      cachedPlinkPath = candidate;
-      return candidate;
-    } catch {
-      // Continue checking the remaining common PuTTY install locations.
-    }
-  }
-
-  cachedPlinkPath = null;
-  return undefined;
-}
-
-function firstWhereResult(command: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    execFile('where.exe', [command], { windowsHide: true }, (error, stdout) => {
-      if (error) {
-        resolve(undefined);
-        return;
-      }
-
-      resolve(stdout.split(/\r?\n/).find(Boolean)?.trim());
-    });
-  });
-}
-
-function terminalMessageCommand(lines: string[]): SpawnCommand {
-  const command = lines.map((line) => `Write-Host ${quotePowerShell(line)}`).join('; ');
-  return {
-    file: 'powershell.exe',
-    args: ['-NoLogo', '-NoProfile', '-Command', command]
-  };
-}
-
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function isPpkKey(keyPath: string | undefined): boolean {
-  return Boolean(keyPath?.toLowerCase().endsWith('.ppk'));
 }

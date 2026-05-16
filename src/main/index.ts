@@ -1,5 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
-import { execFile } from 'node:child_process';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,6 +11,7 @@ import type {
   CreateSessionRequest
 } from '../shared/types';
 
+app.setName('MyTerminal');
 configureDevSessionStorage();
 
 const store = new ConnectionStore();
@@ -52,6 +52,16 @@ function getCommandLineSwitchValue(name: string): string | undefined {
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
 }
 
+function appIconPath(): string {
+  return path.join(__dirname, '../../assets/app-icon.png');
+}
+
+function configureDockIcon(): void {
+  if (process.platform === 'darwin') {
+    app.dock.setIcon(appIconPath());
+  }
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1320,
@@ -59,7 +69,7 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 640,
     title: 'MyTerminal',
-    icon: path.join(__dirname, '../../assets/app-icon.ico'),
+    icon: appIconPath(),
     backgroundColor: '#f6f7f9',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -77,19 +87,12 @@ function createWindow(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('app:privilege-status', async () => ({
-    isWindows: process.platform === 'win32',
-    isAdmin: await isRunningAsAdmin()
-  }));
-  ipcMain.handle('app:relaunch-as-admin', () => relaunchAsAdmin());
-
   ipcMain.handle('connections:list', () => store.list());
   ipcMain.handle('connections:save', (_event, draft: ConnectionDraft) => store.save(draft));
   ipcMain.handle('connections:delete', (_event, id: string) => store.delete(id));
   ipcMain.handle('connections:export-file', () => exportConnectionsFile());
   ipcMain.handle('connections:import-file', () => importConnectionsFile());
   ipcMain.handle('connections:import-ssh-config', () => store.importSshConfig());
-  ipcMain.handle('connections:import-putty-ssh', () => store.importPuttySshSessions());
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const result = await dialog.showOpenDialog({
@@ -107,7 +110,7 @@ function registerIpc(): void {
     return result.canceled ? undefined : result.filePaths[0];
   });
 
-  ipcMain.handle('folder:open-in-explorer', (_event, folderPath: string) => openFolderInExplorer(folderPath));
+  ipcMain.handle('folder:open', (_event, folderPath: string) => openFolder(folderPath));
 
   ipcMain.handle('sessions:create', (_event, request: CreateSessionRequest) => ptyManager.create(request));
   ipcMain.handle('sessions:write', (_event, sessionId: string, data: string) => ptyManager.write(sessionId, data));
@@ -148,11 +151,7 @@ async function importConnectionsFile(): Promise<ConnectionImportResult | undefin
   return { filePath, ...summary };
 }
 
-async function openFolderInExplorer(folderPath: string): Promise<void> {
-  if (process.platform !== 'win32') {
-    throw new Error('Explorer is only available on Windows.');
-  }
-
+async function openFolder(folderPath: string): Promise<void> {
   const resolvedPath = path.resolve(folderPath);
   let folder;
   try {
@@ -165,66 +164,14 @@ async function openFolderInExplorer(folderPath: string): Promise<void> {
     throw new Error('Local folder does not exist.');
   }
 
-  await new Promise<void>((resolve, reject) => {
-    execFile('explorer.exe', [resolvedPath], { windowsHide: false }, (error) => {
-      if (error) {
-        reject(new Error('Failed to open folder in Explorer.'));
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function isRunningAsAdmin(): Promise<boolean> {
-  if (process.platform !== 'win32') {
-    return Promise.resolve(false);
+  const openError = await shell.openPath(resolvedPath);
+  if (openError) {
+    throw new Error('Failed to open folder in Finder.');
   }
-
-  return new Promise((resolve) => {
-    execFile('net.exe', ['session'], { windowsHide: true }, (error) => {
-      resolve(!error);
-    });
-  });
-}
-
-function relaunchAsAdmin(): Promise<void> {
-  if (process.platform !== 'win32') {
-    return Promise.reject(new Error('Administrator relaunch is only available on Windows.'));
-  }
-
-  const args = process.argv.slice(1);
-  const argumentList = args.length
-    ? ` -ArgumentList @(${args.map(quotePowerShell).join(',')})`
-    : '';
-  const command = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quotePowerShell(
-    process.execPath
-  )}${argumentList} -Verb RunAs`;
-
-  return new Promise((resolve, reject) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      { windowsHide: true },
-      (error) => {
-        if (error) {
-          reject(new Error('Administrator relaunch was cancelled or failed.'));
-          return;
-        }
-
-        resolve();
-        setTimeout(() => app.quit(), 200);
-      }
-    );
-  });
-}
-
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
 }
 
 app.whenReady().then(() => {
+  configureDockIcon();
   registerIpc();
   createWindow();
 

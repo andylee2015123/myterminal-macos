@@ -3,7 +3,14 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Connection, ConnectionDraft, SshConnection } from '../shared/types';
+import type {
+  Connection,
+  ConnectionDraft,
+  ConnectionImportSummary,
+  ShellKind,
+  SshAuthType,
+  SshConnection
+} from '../shared/types';
 
 type StoredConnection =
   | Extract<Connection, { type: 'local' }>
@@ -14,6 +21,15 @@ type StoredConnection =
 interface StoreFile {
   version: 1;
   connections: StoredConnection[];
+}
+
+type ExportedConnection = Extract<Connection, { type: 'local' }> | Omit<SshConnection, 'hasPassword'>;
+
+interface ExportFile {
+  app: 'MyTerminal';
+  version: 1;
+  exportedAt: string;
+  connections: ExportedConnection[];
 }
 
 const DEFAULT_COLORS = ['#0f766e', '#b45309', '#be123c', '#4f46e5', '#334155', '#7c2d12'];
@@ -186,6 +202,61 @@ export class ConnectionStore {
     return [...additions, ...updates].map((connection) => this.toPublic(connection));
   }
 
+  async exportToFile(filePath: string): Promise<number> {
+    const connections = await this.read();
+    const payload: ExportFile = {
+      app: 'MyTerminal',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      connections: connections.map(toExportConnection)
+    };
+
+    await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return payload.connections.length;
+  }
+
+  async importFromFile(filePath: string): Promise<ConnectionImportSummary> {
+    const raw = await readFile(filePath, 'utf8');
+    const entries = parseImportFile(raw);
+    const existing = await this.read();
+    const next = [...existing];
+    const now = new Date().toISOString();
+    const summary: ConnectionImportSummary = {
+      total: entries.length,
+      added: 0,
+      updated: 0,
+      skipped: 0
+    };
+
+    entries.forEach((entry, index) => {
+      const imported = normalizeImportedConnection(entry, now, index);
+      if (!imported) {
+        summary.skipped += 1;
+        return;
+      }
+
+      const identityKey = connectionIdentityKey(imported);
+      const existingIndex = next.findIndex(
+        (connection) => connection.id === imported.id || connectionIdentityKey(connection) === identityKey
+      );
+
+      if (existingIndex >= 0) {
+        next[existingIndex] = mergeImportedConnection(next[existingIndex], imported, now);
+        summary.updated += 1;
+        return;
+      }
+
+      next.unshift(imported);
+      summary.added += 1;
+    });
+
+    if (summary.added > 0 || summary.updated > 0) {
+      await this.write(next);
+    }
+
+    return summary;
+  }
+
   private async read(): Promise<StoredConnection[]> {
     if (this.cache) {
       return this.cache;
@@ -297,6 +368,200 @@ function normalizeTags(tags: string[]): string[] {
 
 function pickColor(index: number): string {
   return DEFAULT_COLORS[index % DEFAULT_COLORS.length];
+}
+
+function toExportConnection(connection: StoredConnection): ExportedConnection {
+  if (connection.type === 'ssh') {
+    const { encryptedPassword: _encryptedPassword, ...safeConnection } = connection;
+    return safeConnection;
+  }
+
+  return { ...connection };
+}
+
+function parseImportFile(raw: string): unknown[] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Import file is not valid JSON.');
+  }
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (isRecord(parsed) && Array.isArray(parsed.connections)) {
+    return parsed.connections;
+  }
+
+  throw new Error('Import file must contain a connections array.');
+}
+
+function normalizeImportedConnection(value: unknown, now: string, colorIndex: number): StoredConnection | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const type = textField(value, 'type');
+  const name = textField(value, 'name');
+  if (!name || (type !== 'local' && type !== 'ssh')) {
+    return undefined;
+  }
+
+  const base = {
+    id: textField(value, 'id') || randomUUID(),
+    name,
+    group: textField(value, 'group'),
+    color: colorField(textField(value, 'color'), colorIndex),
+    tags: normalizeTags(arrayField(value, 'tags')),
+    favorite: value.favorite === true,
+    createdAt: dateField(value.createdAt) || now,
+    updatedAt: now,
+    lastOpenedAt: dateField(value.lastOpenedAt)
+  };
+
+  if (type === 'local') {
+    const shell = shellField(value.shell) || 'powershell';
+    const localPath = textField(value, 'localPath');
+    const shellPath = optionalTextField(value, 'shellPath');
+
+    if (!localPath || (shell === 'custom' && !shellPath)) {
+      return undefined;
+    }
+
+    return {
+      ...base,
+      type: 'local',
+      localPath,
+      shell,
+      shellPath: shell === 'custom' ? shellPath : undefined
+    };
+  }
+
+  const host = textField(value, 'host');
+  const sshConfigHost = optionalTextField(value, 'sshConfigHost');
+  const port = portField(value.port);
+  const authType = authTypeField(value.authType) || 'agent';
+  const keyPath = optionalTextField(value, 'keyPath');
+
+  if ((!host && !sshConfigHost) || !port || (authType === 'key' && !keyPath)) {
+    return undefined;
+  }
+
+  return {
+    ...base,
+    type: 'ssh',
+    host,
+    port,
+    username: textField(value, 'username'),
+    authType,
+    keyPath,
+    remotePath: optionalTextField(value, 'remotePath'),
+    sshConfigHost,
+    puttySessionName: optionalTextField(value, 'puttySessionName'),
+    extraArgs: optionalTextField(value, 'extraArgs')
+  };
+}
+
+function mergeImportedConnection(
+  existing: StoredConnection,
+  imported: StoredConnection,
+  now: string
+): StoredConnection {
+  const shared = {
+    id: existing.id,
+    createdAt: existing.createdAt,
+    updatedAt: now,
+    lastOpenedAt: existing.lastOpenedAt || imported.lastOpenedAt
+  };
+
+  if (imported.type === 'ssh') {
+    return {
+      ...imported,
+      ...shared,
+      encryptedPassword: existing.type === 'ssh' ? existing.encryptedPassword : undefined
+    };
+  }
+
+  return {
+    ...imported,
+    ...shared
+  };
+}
+
+function connectionIdentityKey(connection: StoredConnection): string {
+  if (connection.type === 'local') {
+    return [
+      'local',
+      connection.localPath.toLowerCase(),
+      connection.shell,
+      (connection.shellPath || '').toLowerCase()
+    ].join('|');
+  }
+
+  return [
+    'ssh',
+    (connection.sshConfigHost || '').toLowerCase(),
+    connection.host.toLowerCase(),
+    connection.username.toLowerCase(),
+    connection.port,
+    (connection.puttySessionName || '').toLowerCase()
+  ].join('|');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function textField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function optionalTextField(record: Record<string, unknown>, key: string): string | undefined {
+  return textField(record, key) || undefined;
+}
+
+function arrayField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function dateField(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : new Date(timestamp).toISOString();
+}
+
+function colorField(value: string, fallbackIndex: number): string {
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : pickColor(fallbackIndex);
+}
+
+function portField(value: unknown): number | undefined {
+  const port = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  const normalized = Math.trunc(port);
+  return normalized >= 1 && normalized <= 65535 ? normalized : undefined;
+}
+
+function shellField(value: unknown): ShellKind | undefined {
+  if (value === 'powershell' || value === 'pwsh' || value === 'cmd' || value === 'custom') {
+    return value;
+  }
+
+  return undefined;
+}
+
+function authTypeField(value: unknown): SshAuthType | undefined {
+  if (value === 'agent' || value === 'key' || value === 'password') {
+    return value;
+  }
+
+  return undefined;
 }
 
 interface ParsedSshHost {

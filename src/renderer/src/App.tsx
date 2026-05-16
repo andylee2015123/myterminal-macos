@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   ClipboardPaste,
   Copy,
+  Download,
   Edit3,
   Folder,
   FolderOpen,
@@ -26,6 +27,7 @@ import {
   StarOff,
   TerminalSquare,
   Trash2,
+  Upload,
   Wifi
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -302,6 +304,34 @@ export function App(): JSX.Element {
     );
   };
 
+  const exportConnections = async (): Promise<void> => {
+    try {
+      const result = await window.terminalApi.exportConnections();
+      if (!result) {
+        return;
+      }
+
+      setMessage(`Exported ${result.count} connection(s). Passwords are not included.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection export failed.');
+    }
+  };
+
+  const importConnectionsFile = async (): Promise<void> => {
+    try {
+      const result = await window.terminalApi.importConnections();
+      if (!result) {
+        return;
+      }
+
+      await loadConnections();
+      const skipped = result.skipped ? `, ${result.skipped} skipped` : '';
+      setMessage(`Import complete: ${result.added} added, ${result.updated} updated${skipped}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection import failed.');
+    }
+  };
+
   const requestAdminRelaunch = async (): Promise<void> => {
     try {
       setMessage('Requesting administrator relaunch...');
@@ -412,6 +442,12 @@ export function App(): JSX.Element {
           </button>
           <button className="primary-action" onClick={startNewSsh}>
             <Wifi size={16} /> SSH
+          </button>
+          <button className="ghost-action" onClick={exportConnections}>
+            <Download size={16} /> Export
+          </button>
+          <button className="ghost-action" onClick={importConnectionsFile}>
+            <Upload size={16} /> Import
           </button>
           <button className="ghost-action wide" onClick={importSshConfig}>
             <Import size={16} /> Import SSH config

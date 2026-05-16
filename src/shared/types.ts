@@ -79,3 +79,19 @@ export interface AppPrivilegeStatus {
   isWindows: boolean;
   isAdmin: boolean;
 }
+
+export interface ConnectionExportResult {
+  filePath: string;
+  count: number;
+}
+
+export interface ConnectionImportSummary {
+  total: number;
+  added: number;
+  updated: number;
+  skipped: number;
+}
+
+export interface ConnectionImportResult extends ConnectionImportSummary {
+  filePath: string;
+}

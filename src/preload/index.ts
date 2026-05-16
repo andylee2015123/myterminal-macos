@@ -1,8 +1,10 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron';
 import type {
+  AppPrivilegeStatus,
   Connection,
   ConnectionDraft,
-  AppPrivilegeStatus,
+  ConnectionExportResult,
+  ConnectionImportResult,
   CreateSessionRequest,
   SessionDataEvent,
   SessionExitEvent,
@@ -15,6 +17,10 @@ const terminalApi = {
   listConnections: (): Promise<Connection[]> => ipcRenderer.invoke('connections:list'),
   saveConnection: (draft: ConnectionDraft): Promise<Connection> => ipcRenderer.invoke('connections:save', draft),
   deleteConnection: (id: string): Promise<void> => ipcRenderer.invoke('connections:delete', id),
+  exportConnections: (): Promise<ConnectionExportResult | undefined> =>
+    ipcRenderer.invoke('connections:export-file'),
+  importConnections: (): Promise<ConnectionImportResult | undefined> =>
+    ipcRenderer.invoke('connections:import-file'),
   importSshConfig: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-ssh-config'),
   importPuttySsh: (): Promise<Connection[]> => ipcRenderer.invoke('connections:import-putty-ssh'),
   readClipboardText: (): string => clipboard.readText(),

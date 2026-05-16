@@ -5,7 +5,12 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { ConnectionStore } from './connection-store';
 import { PtyManager } from './pty-manager';
-import type { ConnectionDraft, CreateSessionRequest } from '../shared/types';
+import type {
+  ConnectionDraft,
+  ConnectionExportResult,
+  ConnectionImportResult,
+  CreateSessionRequest
+} from '../shared/types';
 
 configureDevSessionStorage();
 
@@ -81,6 +86,8 @@ function registerIpc(): void {
   ipcMain.handle('connections:list', () => store.list());
   ipcMain.handle('connections:save', (_event, draft: ConnectionDraft) => store.save(draft));
   ipcMain.handle('connections:delete', (_event, id: string) => store.delete(id));
+  ipcMain.handle('connections:export-file', () => exportConnectionsFile());
+  ipcMain.handle('connections:import-file', () => importConnectionsFile());
   ipcMain.handle('connections:import-ssh-config', () => store.importSshConfig());
   ipcMain.handle('connections:import-putty-ssh', () => store.importPuttySshSessions());
 
@@ -108,6 +115,37 @@ function registerIpc(): void {
     ptyManager.resize(sessionId, cols, rows)
   );
   ipcMain.handle('sessions:close', (_event, sessionId: string) => ptyManager.close(sessionId));
+}
+
+async function exportConnectionsFile(): Promise<ConnectionExportResult | undefined> {
+  const result = await dialog.showSaveDialog({
+    title: 'Export connections',
+    defaultPath: `myterminal-connections-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'JSON files', extensions: ['json'] }]
+  });
+
+  if (result.canceled || !result.filePath) {
+    return undefined;
+  }
+
+  const count = await store.exportToFile(result.filePath);
+  return { filePath: result.filePath, count };
+}
+
+async function importConnectionsFile(): Promise<ConnectionImportResult | undefined> {
+  const result = await dialog.showOpenDialog({
+    title: 'Import connections',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON files', extensions: ['json'] }]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return undefined;
+  }
+
+  const filePath = result.filePaths[0];
+  const summary = await store.importFromFile(filePath);
+  return { filePath, ...summary };
 }
 
 async function openFolderInExplorer(folderPath: string): Promise<void> {

@@ -1,8 +1,14 @@
 import { BrowserWindow } from 'electron';
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import * as pty from 'node-pty';
 import type { Connection, CreateSessionRequest, SessionInfo } from '../shared/types';
 import { ConnectionStore } from './connection-store';
+
+const SYSTEM_SSH = '/usr/bin/ssh';
+const DEFAULT_MAC_PATHS = ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 interface SpawnCommand {
   file: string;
@@ -62,6 +68,8 @@ export class PtyManager {
       sentHostKeyConfirmation: false
     };
 
+    this.sessions.set(id, session);
+
     child.onData((data) => {
       this.maybeSendPassword(session, data);
       this.maybeConfirmAccessGranted(session, data);
@@ -77,9 +85,8 @@ export class PtyManager {
       this.broadcast('session:exit', { sessionId: id, exitCode });
     });
 
-    this.sessions.set(id, session);
     await this.store.touch(connection.id);
-    return info;
+    return this.sessions.get(id)?.info || info;
   }
 
   write(sessionId: string, data: string): void {
@@ -117,14 +124,16 @@ export class PtyManager {
     }
 
     const args: string[] = [];
-    args.push('-o', 'StrictHostKeyChecking=accept-new');
+    args.push('-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=no');
 
     if (connection.port && connection.port !== 22) {
       args.push('-p', String(connection.port));
     }
 
     if (connection.authType === 'key' && connection.keyPath) {
-      args.push('-i', connection.keyPath);
+      const keyPath = normalizeIdentityFilePath(connection.keyPath);
+      await assertReadableIdentityFile(keyPath);
+      args.push('-i', keyPath, '-o', 'IdentitiesOnly=yes');
     }
 
     for (const extraArg of parseArgs(connection.extraArgs || '')) {
@@ -140,7 +149,7 @@ export class PtyManager {
     }
 
     return {
-      file: 'ssh',
+      file: SYSTEM_SSH,
       args,
       password:
         connection.authType === 'password' && connection.hasPassword
@@ -234,7 +243,55 @@ function buildEnv(): Record<string, string> {
 
   env.TERM = 'xterm-256color';
   env.COLORTERM = 'truecolor';
+  env.PATH = withDefaultMacPaths(env.PATH);
   return env;
+}
+
+function withDefaultMacPaths(value: string | undefined): string {
+  const paths = (value || '').split(':').filter(Boolean);
+
+  for (const path of DEFAULT_MAC_PATHS) {
+    if (!paths.includes(path)) {
+      paths.push(path);
+    }
+  }
+
+  return paths.join(':');
+}
+
+function normalizeIdentityFilePath(value: string): string {
+  return expandHomePath(stripEnclosingQuotes(value.trim()));
+}
+
+async function assertReadableIdentityFile(keyPath: string): Promise<void> {
+  try {
+    await access(keyPath, constants.R_OK);
+  } catch {
+    throw new Error(`Private key is not readable: ${keyPath}`);
+  }
+}
+
+function stripEnclosingQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function expandHomePath(value: string): string {
+  if (value === '~') {
+    return homedir();
+  }
+
+  if (value.startsWith('~/')) {
+    return `${homedir()}${value.slice(1)}`;
+  }
+
+  return value;
 }
 
 function parseArgs(input: string): string[] {

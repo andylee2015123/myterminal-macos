@@ -32,6 +32,12 @@ exports.default = async function pruneMacosPackage(context) {
         remove(path.join(prebuilds, entry.name));
       }
     }
+
+    for (const entry of fs.readdirSync(prebuilds, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith('darwin-')) {
+        ensureExecutable(path.join(prebuilds, entry.name, 'spawn-helper'));
+      }
+    }
   }
 
   const lib = path.join(packageRoot, 'lib');
@@ -44,6 +50,12 @@ exports.default = async function pruneMacosPackage(context) {
     }
   }
 };
+
+function ensureExecutable(target) {
+  if (fs.existsSync(target)) {
+    fs.chmodSync(target, 0o755);
+  }
+}
 
 function remove(target) {
   fs.rmSync(target, { recursive: true, force: true });

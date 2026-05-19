@@ -119,9 +119,9 @@ export function App(): JSX.Element {
   useEffect(() => {
     const offExit = window.terminalApi.onSessionExit((event: SessionExitEvent) => {
       setSessions((current) => {
-        const next = current.filter((session) => session.id !== event.sessionId);
-        setActiveSessionId((activeId) => (activeId === event.sessionId ? next[next.length - 1]?.id : activeId));
-        return next;
+        return current.map((session) =>
+          session.id === event.sessionId ? { ...session, status: 'exited', exitCode: event.exitCode } : session
+        );
       });
     });
 

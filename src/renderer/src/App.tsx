@@ -4,6 +4,8 @@ import { Terminal } from '@xterm/xterm';
 import {
   Braces,
   Check,
+  ChevronDown,
+  ChevronRight,
   ChevronsUpDown,
   ClipboardPaste,
   Copy,
@@ -42,6 +44,7 @@ import type {
 } from '../../shared/types';
 
 const COLORS = ['#0f766e', '#b45309', '#be123c', '#4f46e5', '#334155', '#7c2d12'];
+const COLLAPSED_GROUPS_STORAGE_KEY = 'collapsedConnectionGroups';
 
 const EMPTY_LOCAL_DRAFT: Omit<LocalConnection, 'id' | 'createdAt' | 'updatedAt'> = {
   type: 'local',
@@ -98,6 +101,9 @@ export function App(): JSX.Element {
   const [editorPanelVisible, setEditorPanelVisible] = useState(
     () => window.localStorage.getItem('editorPanelVisible') !== 'false'
   );
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set(readCollapsedConnectionGroups())
+  );
   const terminalActionsRef = useRef(new Map<string, TerminalActions>());
 
   const loadConnections = useCallback(async () => {
@@ -115,6 +121,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     window.localStorage.setItem('editorPanelVisible', String(editorPanelVisible));
   }, [editorPanelVisible]);
+
+  useEffect(() => {
+    window.localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY, JSON.stringify(Array.from(collapsedGroups)));
+  }, [collapsedGroups]);
 
   useEffect(() => {
     const offExit = window.terminalApi.onSessionExit((event: SessionExitEvent) => {
@@ -176,6 +186,7 @@ export function App(): JSX.Element {
 
     return Array.from(map.entries());
   }, [filteredConnections]);
+  const hasActiveSearch = query.trim().length > 0;
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const activeConnection = useMemo(
@@ -312,6 +323,18 @@ export function App(): JSX.Element {
     setDraft((current) => ({ ...current, [key]: value }) as DraftState);
   };
 
+  const toggleConnectionGroup = (group: string): void => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
+  };
+
   const toggleFavorite = async (connection: Connection): Promise<void> => {
     await window.terminalApi.saveConnection({
       ...connection,
@@ -421,26 +444,38 @@ export function App(): JSX.Element {
         </div>
 
         <div className="connection-list">
-          {groupedConnections.map(([group, items]) => (
-            <section className="connection-group" key={group}>
-              <div className="group-title">
-                <span>{group}</span>
-                <span>{items.length}</span>
-              </div>
-              {items.map((connection) => (
-                <ConnectionRow
-                  key={connection.id}
-                  connection={connection}
-                  selected={selectedConnectionId === connection.id}
-                  onOpen={() => openConnection(connection.id)}
-                  onEdit={() => editConnection(connection)}
-                  onDelete={() => deleteConnection(connection)}
-                  onDuplicate={() => duplicateConnection(connection)}
-                  onToggleFavorite={() => toggleFavorite(connection)}
-                />
-              ))}
-            </section>
-          ))}
+          {groupedConnections.map(([group, items]) => {
+            const collapsed = !hasActiveSearch && collapsedGroups.has(group);
+            return (
+              <section className={`connection-group ${collapsed ? 'collapsed' : ''}`} key={group}>
+                <button
+                  className="group-title"
+                  onClick={() => toggleConnectionGroup(group)}
+                  aria-expanded={!collapsed}
+                  title={collapsed ? `Expand ${group}` : `Collapse ${group}`}
+                >
+                  <span className="group-title-copy">
+                    {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    <span>{group}</span>
+                  </span>
+                  <span className="group-count">{items.length}</span>
+                </button>
+                {!collapsed &&
+                  items.map((connection) => (
+                    <ConnectionRow
+                      key={connection.id}
+                      connection={connection}
+                      selected={selectedConnectionId === connection.id}
+                      onOpen={() => openConnection(connection.id)}
+                      onEdit={() => editConnection(connection)}
+                      onDelete={() => deleteConnection(connection)}
+                      onDuplicate={() => duplicateConnection(connection)}
+                      onToggleFavorite={() => toggleFavorite(connection)}
+                    />
+                  ))}
+              </section>
+            );
+          })}
           {filteredConnections.length === 0 && (
             <div className="empty-panel">
               <Monitor size={22} />
@@ -1217,6 +1252,24 @@ function validateDraft(draft: DraftState): string | undefined {
   }
 
   return undefined;
+}
+
+function readCollapsedConnectionGroups(): string[] {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
 }
 
 function formatSshEndpoint(connection: Pick<SshConnection, 'host' | 'port' | 'username'>): string {
